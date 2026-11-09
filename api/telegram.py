@@ -31,25 +31,51 @@ HELP = (
 )
 
 
-MAPS_DIR = os.path.join(os.path.dirname(__file__), "assets", "maps")
+import re
+_ASSETS = os.path.join(os.path.dirname(__file__), "assets")
+MAP_DIRS = [os.path.join(_ASSETS, "maps"), _ASSETS]   # maps 폴더와 assets 루트 모두 탐색
+RESERVED = {"stylea_bg", "styleb_bg", "poster_bg"}     # 배경 파일은 제외
+
+
+def _tokens(s):
+    """한글/영문/숫자 덩어리로 쪼개 길이 2자 이상만. 괄호·공백·기호 무시."""
+    return [t for t in re.split(r"[^0-9A-Za-z가-힣]+", str(s)) if len(t) >= 2]
 
 
 def find_stored_map(venue, address):
-    """assets/maps/ 안의 지도 이미지 중, 파일명(키워드)이 장소·주소에 포함되면 사용.
-    가장 긴(구체적인) 키워드를 우선. 공백은 무시하고 비교."""
-    try:
-        files = os.listdir(MAPS_DIR)
-    except Exception:
-        return None
-    hay = (str(venue) + str(address)).replace(" ", "")
-    best, best_len = None, 0
-    for fn in files:
-        stem, ext = os.path.splitext(fn)
-        if ext.lower() not in (".jpg", ".jpeg", ".png"):
+    """저장된 지도 중 장소/주소와 가장 잘 맞는 것을 고른다.
+    - 파일명 단어가 주소에 있거나, 주소 단어가 파일명에 있으면 매칭 (양방향)
+    - 가장 긴(구체적인) 일치 단어를 우선"""
+    hay = (str(venue) + " " + str(address))
+    hay_ns = hay.replace(" ", "")
+    hay_tok = _tokens(hay)
+    best, best_score = None, 0
+    seen = set()
+    for d in MAP_DIRS:
+        try:
+            files = os.listdir(d)
+        except Exception:
             continue
-        key = stem.replace(" ", "")
-        if key and key in hay and len(key) > best_len:
-            best, best_len = os.path.join(MAPS_DIR, fn), len(key)
+        for fn in files:
+            stem, ext = os.path.splitext(fn)
+            if ext.lower() not in (".jpg", ".jpeg", ".png"):
+                continue
+            if stem.lower() in RESERVED:
+                continue
+            full = os.path.join(d, fn)
+            if full in seen:
+                continue
+            seen.add(full)
+            stem_ns = stem.replace(" ", "")
+            score = 0
+            for t in _tokens(stem):          # 파일명 단어가 주소에 등장
+                if t in hay_ns:
+                    score = max(score, len(t))
+            for t in hay_tok:                # 주소 단어가 파일명에 등장
+                if t in stem_ns:
+                    score = max(score, len(t))
+            if score > best_score:
+                best, best_score = full, score
     return best
 
 
