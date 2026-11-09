@@ -22,9 +22,46 @@ HELP = (
     "세미나 정보를 아래 순서로 '/'로 구분해 보내주세요:\n"
     "날짜 / 시간 / 장소 / 상세주소 / 인원 / 스타일(a 또는 b)\n\n"
     "예) 2026-11-15 / 14:00 / 국제건업건물 2층 / 인천시 부평구 동암남로 17,2층 / 50 / a\n\n"
+    "🗺 지도 넣는 방법 (둘 중 하나):\n"
+    "   ① 지도 사진을 '첨부'하고, 설명을 그 사진 '캡션'에 적어 보내기\n"
+    "   ② 저장소 api/assets/maps 에 지도를 미리 올려두면, 장소/주소에\n"
+    "      맞는 지도를 자동으로 찾아 넣습니다 (파일명=장소 키워드)\n\n"
     "• 스타일 a = 네이비 포스터, b = 골프장 포스터\n"
     "• 인원은 'NN명 한정' 말풍선 (0이면 표시 안 함)"
 )
+
+
+MAPS_DIR = os.path.join(os.path.dirname(__file__), "assets", "maps")
+
+
+def find_stored_map(venue, address):
+    """assets/maps/ 안의 지도 이미지 중, 파일명(키워드)이 장소·주소에 포함되면 사용.
+    가장 긴(구체적인) 키워드를 우선. 공백은 무시하고 비교."""
+    try:
+        files = os.listdir(MAPS_DIR)
+    except Exception:
+        return None
+    hay = (str(venue) + str(address)).replace(" ", "")
+    best, best_len = None, 0
+    for fn in files:
+        stem, ext = os.path.splitext(fn)
+        if ext.lower() not in (".jpg", ".jpeg", ".png"):
+            continue
+        key = stem.replace(" ", "")
+        if key and key in hay and len(key) > best_len:
+            best, best_len = os.path.join(MAPS_DIR, fn), len(key)
+    return best
+
+
+def download_photo(file_id):
+    r = requests.get(API + "getFile", params={"file_id": file_id}, timeout=20).json()
+    fp = r["result"]["file_path"]
+    url = "https://api.telegram.org/file/bot%s/%s" % (TOKEN, fp)
+    data = requests.get(url, timeout=40).content
+    path = "/tmp/map_%d.jpg" % os.getpid()
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
 
 
 def send_text(chat, text):
@@ -62,20 +99,37 @@ def handle_update(update):
     if ALLOW and chat not in ALLOW:
         send_text(chat, "사용 권한이 없습니다. (채팅ID: %s)" % chat)
         return
-    text = (msg.get("text") or "").strip()
-    if not text:
+    # 사진 첨부 시 캡션을, 아니면 text 를 설명으로 사용
+    text = (msg.get("text") or msg.get("caption") or "").strip()
+    has_photo = bool(msg.get("photo"))
+    if not text and not has_photo:
         return
     if text in ("/start", "/help", "도움말"):
         send_text(chat, HELP + "\n\n(이 채팅 ID: %s)" % chat)
+        return
+    if has_photo and not text:
+        send_text(chat, "지도 사진을 받았어요. 사진의 '캡션(설명)'란에 세미나 정보를 적어 함께 보내주세요.\n\n" + HELP)
         return
     parsed = parse(text)
     if not parsed:
         send_text(chat, "형식을 인식하지 못했습니다.\n\n" + HELP)
         return
     f, style = parsed
-    send_text(chat, "포스터 생성 중… (%s %s)" % (poster_date(f["date"]), poster_time(f["time"])))
+    photo_path, map_src = None, ""
+    if has_photo:
+        try:
+            photo_path = download_photo(msg["photo"][-1]["file_id"])
+            map_src = " · 첨부지도"
+        except Exception:
+            photo_path = None
+    if not photo_path:
+        stored = find_stored_map(f["venue"], f["address"])
+        if stored:
+            photo_path, map_src = stored, " · 저장지도"
+    send_text(chat, "포스터 생성 중… (%s %s)%s" % (
+        poster_date(f["date"]), poster_time(f["time"]), map_src))
     try:
-        img = generate_poster(f, style)
+        img = generate_poster(f, style, photo_path=photo_path)
         cap = ("📢 세미나 포스터\n🗓 %s %s\n📍 %s %s" % (
             poster_date(f["date"]), poster_time(f["time"]), f["venue"], f["address"])).strip()
         send_photo(chat, img, cap)
